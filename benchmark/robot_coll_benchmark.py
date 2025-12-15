@@ -85,14 +85,14 @@ pin_model, pin_data, pin_geom_model, pin_geom_data = setup_pinocchio_collision(
     urdf_path, mesh_dir, SPHERE_CENTERS, SPHERE_R
 )
 
-sphere_coll_not = SphereNot.from_center_and_radius(SPHERE_CENTERS, SPHERE_R)
-sphere_coll = Sphere.from_center_and_radius(SPHERE_CENTERS, SPHERE_R)
+world_coll_not = SphereNot.from_center_and_radius(SPHERE_CENTERS, SPHERE_R)
+world_coll = Sphere.from_center_and_radius(SPHERE_CENTERS, SPHERE_R)
 
 urdf = yourdfpy.URDF.load(urdf_path, mesh_dir=mesh_dir)
 robot_not = prn.Robot.from_urdf(urdf)
 robot = pk.Robot.from_urdf(urdf)
-robot_coll_capsule = RobotCollision.from_urdf(urdf)
-robot_coll_sphere = RobotCollisionSpherizedNot.from_urdf(urdf)
+robot_coll = RobotCollision.from_urdf(urdf)
+robot_coll_not = RobotCollisionSpherizedNot.from_urdf(urdf)
 
 def generate_dataset(num_samples):
     q_batch = []
@@ -124,34 +124,40 @@ print(f"Collision rate: {ground_truth.sum()}/{NUM_SAMPLES} ({100*ground_truth.me
 print("\n=== Benchmarking pyronot Collision Methods ===")
 # Warmup for JIT 
 q = q_batch[0]
-robot_coll_capsule.at_config(robot, q)
-robot_coll_capsule.compute_world_collision_distance(robot, q, sphere_coll)
-print(f"Type of robot_coll_capsule.compute_world_collision_distance: {type(robot_coll_capsule.compute_world_collision_distance)}")
+robot_coll.at_config(robot, q)
+jax.block_until_ready(robot_coll.compute_world_collision_distance(robot, q, world_coll))
+print(f"Type of robot_coll.compute_world_collision_distance: {type(robot_coll.compute_world_collision_distance)}")
 try:
-    print(f"Capsule cache: {robot_coll_capsule.compute_world_collision_distance._cache_size()}")
+    print(f"Capsule cache: {robot_coll.compute_world_collision_distance._cache_size()}")
 except AttributeError:
     print("Capsule method is NOT JIT compiled")
     
-robot_coll_sphere.at_config(robot_not, q)
-robot_coll_sphere.compute_world_collision_distance(robot_not, q, sphere_coll_not)
-print(f"Type of robot_coll_sphere.compute_world_collision_distance: {type(robot_coll_sphere.compute_world_collision_distance)}")
+robot_coll_not.at_config(robot_not, q)
+jax.block_until_ready(robot_coll_not.compute_world_collision_distance(robot_not, q, world_coll_not))
+print(f"Type of robot_coll_not.compute_world_collision_distance: {type(robot_coll_not.compute_world_collision_distance)}")
 try:
-    print(f"Sphere cache: {robot_coll_sphere.compute_world_collision_distance._cache_size()}")
+    print(f"Sphere cache: {robot_coll_not.compute_world_collision_distance._cache_size()}")
 except AttributeError:
     print("Sphere method is NOT JIT compiled")
+# End of warmup
 
 start_time = time.time()
+# with jax.profiler.trace("./tmp/sphere_trace"):
+#     for q in q_batch:
+#         robot_coll_not.at_config(robot_not, q)
+#         result = robot_coll_not.compute_world_collision_distance(robot_not, q, world_coll_not)
+#         jax.block_until_ready(result)
 for q in q_batch:
-    robot_coll_sphere.at_config(robot_not, q)
-    robot_coll_sphere.compute_world_collision_distance(robot_not, q, sphere_coll_not)
+    # robot_coll_not.at_config(robot_not, q)
+    robot_coll_not.compute_world_collision_distance(robot_not, q, world_coll_not)
 end_time = time.time()
 time_taken_ms = (end_time - start_time) * 1000
 print(f"Time taken for sphere for single collision check (ms): {time_taken_ms/NUM_SAMPLES:.4f}")
 
 start_time = time.time()
 for q in q_batch:
-    robot_coll_capsule.at_config(robot, q)
-    robot_coll_capsule.compute_world_collision_distance(robot, q, sphere_coll)
+    # robot_coll.at_config(robot, q)
+    robot_coll.compute_world_collision_distance(robot, q, world_coll)
 end_time = time.time()
 time_taken_ms = (end_time - start_time) * 1000
 print(f"Time taken for capsule for single collision check (ms): {time_taken_ms/NUM_SAMPLES:.4f}")
@@ -162,7 +168,7 @@ print("\n=== Accuracy Comparison with Ground Truth ===")
 # Check sphere model accuracy
 sphere_predictions = []
 for q in q_batch:
-    dist = robot_coll_sphere.compute_world_collision_distance(robot_not, q, sphere_coll_not)
+    dist = robot_coll_not.compute_world_collision_distance(robot_not, q, world_coll_not)
     # Collision if any distance is negative
     in_collision = (np.array(dist) < 0).any()
     sphere_predictions.append(in_collision)
@@ -173,7 +179,7 @@ print(f"Sphere model accuracy: {100*sphere_accuracy:.2f}%")
 # Check capsule model accuracy  
 capsule_predictions = []
 for q in q_batch:
-    dist = robot_coll_capsule.compute_world_collision_distance(robot, q, sphere_coll)
+    dist = robot_coll.compute_world_collision_distance(robot, q, world_coll)
     # Collision if any distance is negative
     in_collision = (np.array(dist) < 0).any()
     capsule_predictions.append(in_collision)
