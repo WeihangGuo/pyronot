@@ -428,8 +428,8 @@ class RobotCollisionSpherized:
 
     num_links: jdc.Static[int]
     """Number of links in the model (matches kinematics links)."""
-    num_spheres_per_link: jdc.Static[int]
-    """Number of spheres per link."""
+    spheres_per_link: jdc.Static[tuple[int, ...]]
+    """Number of spheres for each link (tuple of length num_links)."""
     link_names: jdc.Static[tuple[str, ...]]
     """Names of the links corresponding to link indices."""
     coll: CollGeom
@@ -480,33 +480,18 @@ class RobotCollisionSpherized:
             )
             link_sphere_meshes.append(spheres)
 
-        sphere_list_per_link: list[list[Sphere]] = []
+        # Build flat list of spheres and track count per link
+        sphere_list: list[Sphere] = []
+        spheres_per_link: list[int] = []
         for sphere_meshes in link_sphere_meshes:
             per_link_spheres = [
                 Sphere.from_trimesh(mesh) for mesh in sphere_meshes if mesh is not None
             ]
-            sphere_list_per_link.append(per_link_spheres)
+            sphere_list.extend(per_link_spheres)
+            spheres_per_link.append(len(per_link_spheres))
 
-        ############ Weihang: Please check this part #############
-        # Add padding to the spheres list to make it a batched sphere object
-        max_spheres = max(len(spheres) for spheres in sphere_list_per_link)
-        padded_sphere_list: list[Sphere] = []
-        for per_link_spheres in sphere_list_per_link:
-            if len(per_link_spheres) < max_spheres:
-                # Create dummy/invalid spheres for padding (e.g., zero radius)
-                dummy_sphere = Sphere.from_center_and_radius(
-                    center=jnp.zeros(3),
-                    radius=jnp.array(0.0),  # or negative to mark as invalid
-                )
-                padded = per_link_spheres + [dummy_sphere] * (
-                    max_spheres - len(per_link_spheres)
-                )
-                padded_sphere_list.extend(padded)
-            else:
-                padded_sphere_list.extend(per_link_spheres)
-        spheres = cast(Sphere, jax.tree.map(lambda *args: jnp.stack(args), *padded_sphere_list))
-
-        ##########################################################
+        # Stack all spheres into a batched Sphere object
+        spheres = cast(Sphere, jax.tree.map(lambda *args: jnp.stack(args), *sphere_list))
 
         # Directly compute active pair indices
         # Weihang: Have not checked this part yet!!!
@@ -536,11 +521,11 @@ class RobotCollisionSpherized:
 
         return RobotCollisionSpherized(
             num_links=link_info.num_links,
-            num_spheres_per_link=max_spheres,
+            spheres_per_link=tuple(spheres_per_link),
             link_names=link_name_list,
             active_idx_i=active_idx_i,
             active_idx_j=active_idx_j,
-            coll=spheres,  # now stores lists of Sphere objects per link
+            coll=spheres,
         )
 
     @staticmethod
@@ -762,13 +747,13 @@ class RobotCollisionSpherized:
         # TODO: Override with passed in result of fk so i don't have to recompute
         Ts_link_world_wxyz_xyz = robot.forward_kinematics(cfg)
 
-        # Spheres are laid out as [link0_s0..sM, link1_s0..sM, ...]
-        # Each link has num_spheres_per_link spheres (padded)
-        # Repeat each link's transform for all its spheres
-        total_spheres = self.num_links * self.num_spheres_per_link
+        # Spheres are laid out as [link0_s0..sN0, link1_s0..sN1, ...]
+        # where Ni = spheres_per_link[i]
+        # Repeat each link's transform by its sphere count
+        total_spheres = sum(self.spheres_per_link)
         expanded_transforms = jnp.repeat(
             Ts_link_world_wxyz_xyz,
-            self.num_spheres_per_link,
+            jnp.array(self.spheres_per_link),
             axis=-2,
             total_repeat_length=total_spheres
         )
@@ -848,7 +833,6 @@ class RobotCollisionSpherized:
         coll_robot_world = self.at_config(robot, cfg)
         N = self.num_links
         batch_cfg_shape = coll_robot_world.get_batch_axes()[:-1]
-        print(f"!!Pyroki get_batch_axes: {coll_robot_world.get_batch_axes()}")
         # 2. Normalize world_geom shape and determine M
         world_axes = world_geom.get_batch_axes()
         if len(world_axes) == 0:  # Single world object
