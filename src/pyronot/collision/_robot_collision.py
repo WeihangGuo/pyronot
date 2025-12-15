@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional, Tuple, cast
-import math
 
 import jax
 import jax.numpy as jnp
@@ -10,7 +9,6 @@ import jaxlie
 import trimesh
 import yourdfpy
 from jaxtyping import Array, Float, Int
-from jax import lax
 from loguru import logger
 
 if TYPE_CHECKING:
@@ -874,6 +872,49 @@ class RobotCollisionSpherized:
         )
 
         return dist_matrix
+
+    def compute_world_collision_distance_with_exclude_links(
+        self,
+        robot: Robot,
+        cfg: Float[Array, "*batch_cfg actuated_count"],
+        world_geom: CollGeom,  # Shape: (*batch_world, M, ...)
+        exclude_link_mask: Int[Array, " num_links"],
+    ) -> Float[Array, "*batch_combined N M"]:
+        """
+        Computes signed distances between all robot links (N) and world obstacles (M),
+        accounting for multiple primitives (S) per link.
+
+        The minimum distance over all primitives in each link is used as the link's
+        representative distance to each world object.
+        """
+        dist_matrix = self.compute_world_collision_distance(robot, cfg, world_geom)
+        dist_matrix = RobotCollisionSpherized.mask_collision_distance(dist_matrix, exclude_link_mask)
+        return dist_matrix
+
+    def is_in_collision(
+        self,
+        robot: Robot,
+        cfg: Float[Array, "*batch_cfg actuated_count"],
+        world_geom: CollGeom,  # Shape: (*batch_world, M, ...)
+    ) -> Bool[Array, "*batch_combined N M"]:
+        """
+        Checks if the robot is in collision with the world obstacles.
+        """
+        dist_matrix = self.compute_world_collision_distance(robot, cfg, world_geom)
+        return dist_matrix < 0
+
+    def is_in_collision_with_exclude_links(
+        self,
+        robot: Robot,
+        cfg: Float[Array, "*batch_cfg actuated_count"],
+        world_geom: CollGeom,  # Shape: (*batch_world, M, ...)
+        exclude_link_mask: Int[Array, " num_links"],
+    ) -> Bool[Array, "*batch_combined N M"]:
+        """
+        Checks if the robot is in collision with the world obstacles, excluding the specified links.
+        """
+        dist_matrix = self.compute_world_collision_distance_with_exclude_links(robot, cfg, world_geom, exclude_link_mask)
+        return dist_matrix < 0
 
     # @jdc.jit
     # def compute_world_collision_distance(
